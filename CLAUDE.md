@@ -11,8 +11,9 @@ work is scoped by country directory (e.g. `syr/`, `gab/`).
 | --- | --- |
 | [tools.fieldmaps.io](https://tools.fieldmaps.io/) | Topology Cleaner, Edge Extender, Changelog — run in browser |
 | DuckDB (spatial ext) | All data inspection, transformation, attribute work, validation |
-| uv | All Python scripts (`uv run`); `uv add` for dependencies |
-| `prepare.py` | Fetches HDX reference, detects version, converts all inputs to GeoParquet |
+| uv | All Python scripts (`uv run scripts/foo.py`); `uv add` for dependencies |
+| `scripts/prepare.py` | Fetches HDX reference, detects version, converts all inputs to GeoParquet |
+| `scripts/m49.py` | Downloads UN M49 country names in all 6 official UN languages → `data/m49.parquet` |
 
 DuckDB spatial: `duckdb -c "INSTALL spatial; LOAD spatial; ..."` or use `:memory:` shell.
 
@@ -45,7 +46,7 @@ If only `raw/` is present (no versioned subdirectories), do both steps below.
 #### 2a. Reference GDB (automated)
 
 ```bash
-uv run python3 prepare.py {iso3}
+uv run scripts/prepare.py {iso3}
 ```
 
 Downloads the HDX COD-AB GDB if not already present, detects `{ref_version}`, computes
@@ -53,8 +54,9 @@ Downloads the HDX COD-AB GDB if not already present, detects `{ref_version}`, co
 
 #### 2b. Raw inputs (manual — format varies)
 
-Raw inputs can arrive in any spatial format. Inspect each file in `{iso3}/raw/` and convert
-to GeoParquet with the appropriate DuckDB command.
+Convert **all** files in `{iso3}/raw/` to GeoParquet — including admin levels that will later
+be derived (e.g. admin1/2), so they are available for reference and attribute cross-checking.
+Raw inputs can arrive in any spatial format; use the appropriate DuckDB command below.
 
 For single-layer files (Shapefile, GeoJSON, etc.):
 
@@ -129,7 +131,7 @@ files accordingly, then propose the next step.
     {iso3}_admin3.parquet   # Input GeoParquet (renamed after level mapping confirmed)
     {iso3}_admin4.parquet
     00-compare/             # Changelog outputs ({iso3}_admin{N}/ per level)
-    01-topology/            # Topology Cleaner outputs ({iso3}_admin{N}.geojson)
+    01-topology/            # Topology Cleaner outputs ({iso3}_admin{N}.parquet or .geojson)
     02-schema/              # Schema-mapped, column-reordered ({iso3}_admin{N}.gpkg)
     03-codes/               # P-codes assigned and validated ({iso3}_admin{N}.gpkg)
     04-attributes/          # All attributes complete ({iso3}_admin{N}.gpkg)
@@ -296,12 +298,13 @@ dataset, not a like-for-like comparison.
 1. For each level: upload the reference GeoParquet (from `{iso3}/{ref_version}/`) and the
    corresponding input GeoParquet (from `{iso3}/{version}/`) side by side
 
-1. Download crosswalk CSV + overlay GeoJSON to `{iso3}/{version}/00-compare/{iso3}_admin{N}/`
+1. Download crosswalk CSV + overlay GeoJSON to `{iso3}/{version}/00-compare/{iso3}_admin{N}/`.
+   fieldmaps.io downloads often land at the repo root — move them before processing.
 
 1. Read crosswalk with DuckDB:
 
    ```bash
-   duckdb -c "SELECT relationship, COUNT(*) FROM
+   duckdb -c "SELECT relationship_class, COUNT(*) FROM
      read_csv('{iso3}/{version}/00-compare/{iso3}_admin3/crosswalk.csv') GROUP BY 1 ORDER BY 2 DESC;"
    ```
 
@@ -325,17 +328,20 @@ Derived levels (admin0/1/2) skip this stage.
    issues CSV if you want Claude to recommend gap-width and sliver-tolerance settings.
 
 1. Adjust parameters, verify fixes on the map, download cleaned file to
-   `{iso3}/{version}/01-topology/{iso3}_admin3.geojson`
+   `{iso3}/{version}/01-topology/{iso3}_admin3.parquet` (or `.geojson`).
+   fieldmaps.io downloads often land at the repo root — move them before processing.
 
 1. Repeat for admin4 (plus Edge Extender step — see Geometry Model)
 
-1. Claude validates with DuckDB:
+1. Claude validates with DuckDB. The geometry column is `geometry` for Parquet output
+   from fieldmaps.io (vs `geom` for files we write ourselves):
 
    ```bash
    duckdb -c "INSTALL spatial; LOAD spatial;
-     SELECT COUNT(*) FILTER (WHERE geom IS NULL) AS null_geoms,
-            COUNT(*) FILTER (WHERE NOT ST_IsValid(geom)) AS invalid_geoms
-     FROM ST_Read('{iso3}/{version}/01-topology/{iso3}_admin3.geojson');"
+     SELECT COUNT(*) FILTER (WHERE geometry IS NULL) AS null_geoms,
+            COUNT(*) FILTER (WHERE NOT ST_IsValid(geometry)) AS invalid_geoms,
+            COUNT(*) FILTER (WHERE ST_GeometryType(geometry) NOT IN ('POLYGON','MULTIPOLYGON')) AS wrong_type
+     FROM read_parquet('{iso3}/{version}/01-topology/{iso3}_admin3.parquet');"
    ```
 
 ---
@@ -346,7 +352,10 @@ Applies to all levels. Admin0/1/2 are derived from admin3 here.
 
 1. Claude reads `{iso3}/{version}/01-topology/` files with DuckDB and lists all columns
 
-1. Claude proposes a mapping: source column → COD-AB column name (or DROP)
+1. Claude proposes a mapping: source column → COD-AB column name (or DROP).
+   For `adm0_name` and alternate-language equivalents, look up the correct UN M49 short names
+   from `data/m49.parquet` (run `uv run scripts/m49.py` if not present) — do not copy from
+   the previous release without verifying.
 
 1. **Verification gate**: confirm column mapping and BCP 47 language codes before proceeding
 

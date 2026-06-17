@@ -1,19 +1,12 @@
-# Raw source data and large binary geo files
-*/raw/
-*.parquet
-*.gpkg
-*.geojson
-
-# Pipeline stage outputs (large binary)
-*/01-topology/
-*/02-schema/
-*/03-codes/
-*/04-attributes/
-*/output/
+# Country working directories (ISO3 codes — all processing output is ephemeral)
+???/
 
 # local config
 .claude/
 .env
+
+# Downloaded reference data
+data/
 
 # DuckDB
 *.duckdb
