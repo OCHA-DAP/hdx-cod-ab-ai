@@ -32,7 +32,7 @@ If multiple countries exist, ask the user which one to work on. Set `{iso3}` = t
 code (e.g. `syr`). The version numbers are derived from the data — `{ref_version}` is the
 previous HDX release (e.g. `v02`), `{version}` is the new release being prepared (e.g. `v03`).
 
-### 2. Run prepare.py (if not already done)
+### 2. Convert inputs to GeoParquet (if not already done)
 
 Check whether GeoParquet files exist:
 
@@ -40,19 +40,45 @@ Check whether GeoParquet files exist:
 ls {iso3}/
 ```
 
-If only `raw/` is present (no versioned subdirectories), run:
+If only `raw/` is present (no versioned subdirectories), do both steps below.
+
+#### 2a. Reference GDB (automated)
+
+Download the HDX reference GDB for `{iso3}` and place it anywhere under `{iso3}/` (not
+inside `raw/`). Then run:
 
 ```bash
 uv run python3 prepare.py {iso3}
 ```
 
-This fetches the HDX GDB, detects `{ref_version}`, increments to `{version}`, converts all
-layers to GeoParquet (GEOPARQUET_VERSION BOTH, ZSTD-15), and outputs:
-- `{iso3}/{ref_version}/` — reference layers from HDX
-- `{iso3}/{version}/` — input layers from `{iso3}/raw/`
+This detects `{ref_version}`, computes `{version}`, and writes reference layers to
+`{iso3}/{ref_version}/`.
 
-Input files are named `{iso3}_{source_stem}.parquet`. After confirming the admin level
-mapping, rename them to `{iso3}_admin{N}.parquet`.
+#### 2b. Raw inputs (manual — format varies)
+
+Raw inputs can arrive in any spatial format. Inspect each file in `{iso3}/raw/` and convert
+to GeoParquet with the appropriate DuckDB command.
+
+For single-layer files (Shapefile, GeoJSON, etc.):
+
+```bash
+duckdb -c "INSTALL spatial; LOAD spatial;
+  COPY (SELECT * FROM ST_Read('{iso3}/raw/.../{file}'))
+  TO '{iso3}/{version}/{iso3}_{stem}.parquet'
+  (FORMAT PARQUET, COMPRESSION ZSTD, COMPRESSION_LEVEL 15, GEOPARQUET_VERSION 'BOTH');"
+```
+
+For multi-layer archives (GDB, GPKG) — first list layers, then convert each:
+
+```bash
+gdal vector info {iso3}/raw/.../{archive}
+duckdb -c "INSTALL spatial; LOAD spatial;
+  COPY (SELECT * FROM ST_Read('{iso3}/raw/.../{archive}', layer='{layer}'))
+  TO '{iso3}/{version}/{iso3}_{stem}_{layer}.parquet'
+  (FORMAT PARQUET, COMPRESSION ZSTD, COMPRESSION_LEVEL 15, GEOPARQUET_VERSION 'BOTH');"
+```
+
+After confirming the admin level mapping, rename outputs to `{iso3}_admin{N}.parquet`.
 
 ### 3. Check for existing progress
 

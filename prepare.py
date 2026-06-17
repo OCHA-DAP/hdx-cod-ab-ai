@@ -1,13 +1,9 @@
-"""Prepare reference and input data as GeoParquet for the COD-AB pipeline.
+"""Convert the HDX reference GDB to GeoParquet and detect version numbers.
 
 Usage: uv run python3 prepare.py <iso3>
 
-Outputs:
-  {iso3}/{ref_version}/   — reference layers from HDX GDB (e.g. syr/v02/)
-  {iso3}/{new_version}/   — input shapefiles from source authority (e.g. syr/v03/)
-
-Raw source files are read from {iso3}/raw/.
-Format: GEOPARQUET_VERSION BOTH, ZSTD-15
+Requires the HDX reference GDB to already be present anywhere under {iso3}/.
+Outputs reference layers to {iso3}/{ref_version}/ and prints the new version to use.
 """
 
 import argparse
@@ -26,10 +22,10 @@ _COPY_OPTIONS = (
 )
 
 
-def get_gdb_layers(gdb_path: Path) -> list[str]:
-    """Return layer names from a GDB using gdal vector info."""
+def get_layers(path: Path) -> list[str]:
+    """Return layer names from a spatial archive (GDB, GPKG, etc.)."""
     result = subprocess.run(
-        ["gdal", "vector", "info", str(gdb_path)],
+        ["gdal", "vector", "info", str(path)],
         capture_output=True,
         text=True,
         check=True,
@@ -69,7 +65,7 @@ def convert(
     dst: Path,
     layer: str | None = None,
 ) -> None:
-    """Convert a spatial file (or GDB layer) to GeoParquet. Skips if dst exists."""
+    """Convert a spatial file (or archive layer) to GeoParquet. Skips if dst exists."""
     if dst.exists():
         row = con.execute(f"SELECT COUNT(*) FROM '{dst}'").fetchone()
         count = row[0] if row else 0
@@ -88,24 +84,24 @@ def convert(
 
 
 def main() -> None:
-    """Run the preparation pipeline for a given country."""
+    """Convert the HDX reference GDB to GeoParquet and print version numbers."""
     parser = argparse.ArgumentParser(
-        description="Prepare COD-AB reference and input data as GeoParquet.",
+        description="Convert HDX reference GDB to GeoParquet.",
     )
     parser.add_argument("iso3", help="Country ISO3 code (e.g. syr)")
     args = parser.parse_args()
     iso3 = args.iso3.lower()
 
+    country_dir = Path(iso3)
+    gdbs = [p for p in country_dir.glob("**/*.gdb") if "raw" not in p.parts]
+    if not gdbs:
+        sys.exit(f"No GDB found under {country_dir}/ — download from HDX first")
+    gdb = gdbs[0]
+
     con = duckdb.connect()
     con.execute("INSTALL spatial; LOAD spatial;")
 
-    country_dir = Path(iso3)
-    gdbs = list(country_dir.glob("**/*.gdb"))
-    if not gdbs:
-        sys.exit(f"No GDB found under {country_dir}/ — fetch from HDX first")
-    gdb = gdbs[0]
-
-    layers = get_gdb_layers(gdb)
+    layers = get_layers(gdb)
     ref_version = detect_ref_version(con, gdb, layers)
     new_version = increment_version(ref_version)
     log.info("Reference: %s  →  New: %s\n", ref_version, new_version)
@@ -115,23 +111,7 @@ def main() -> None:
     for layer in layers:
         convert(con, str(gdb), ref_out / f"{layer}.parquet", layer=layer)
 
-    raw_dir = country_dir / "raw"
-    shapefiles = sorted(raw_dir.rglob("*.shp"))
-    if not shapefiles:
-        sys.exit(f"No shapefiles found in {raw_dir}")
-
-    new_out = country_dir / new_version
-    log.info("\nInput → %s/", new_out)
-    for shp in shapefiles:
-        out_name = f"{iso3}_{shp.stem.lower().replace(' ', '_')}.parquet"
-        convert(con, str(shp), new_out / out_name)
-
-    log.info(
-        "\nDone. Rename files in %s/ to %s_admin{N}.parquet "
-        "once level mapping is confirmed.",
-        new_out,
-        iso3,
-    )
+    log.info("\nNow convert raw inputs manually — see CLAUDE.md Session Start Step 2.")
 
 
 if __name__ == "__main__":
