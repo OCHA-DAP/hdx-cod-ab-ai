@@ -1,0 +1,25 @@
+# data directories
+input/
+reference/
+work/
+output/
+
+# local config
+.claude/
+.env
+
+# DuckDB
+*.duckdb
+*.duckdb.wal
+
+# GeoPackage SQLite lock files
+*.gpkg-wal
+*.gpkg-shm
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# macOS
+.DS_Store
