@@ -44,15 +44,12 @@ If only `raw/` is present (no versioned subdirectories), do both steps below.
 
 #### 2a. Reference GDB (automated)
 
-Download the HDX reference GDB for `{iso3}` and place it anywhere under `{iso3}/` (not
-inside `raw/`). Then run:
-
 ```bash
 uv run python3 prepare.py {iso3}
 ```
 
-This detects `{ref_version}`, computes `{version}`, and writes reference layers to
-`{iso3}/{ref_version}/`.
+Downloads the HDX COD-AB GDB if not already present, detects `{ref_version}`, computes
+`{version}`, and writes reference layers to `{iso3}/{ref_version}/`.
 
 #### 2b. Raw inputs (manual — format varies)
 
