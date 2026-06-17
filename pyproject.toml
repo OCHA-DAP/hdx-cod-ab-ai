@@ -1,0 +1,15 @@
+[project]
+name = "hdx-cod-ab-ai"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = ["duckdb"]
+
+[dependency-groups]
+dev = ["ruff"]
+
+[tool.ruff]
+fix = true
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ["COM812", "D203", "D213", "S603", "S607", "S608"]

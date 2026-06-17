@@ -2,7 +2,8 @@
 
 This workspace processes raw administrative boundary data from a source authority into a
 validated COD-AB release. The previous published version is fetched automatically from HDX
-and used as a reference baseline.
+and used as a reference baseline. Multiple countries can be in flight simultaneously — all
+work is scoped by country directory (e.g. `syr/`, `gab/`).
 
 ## Tools
 
@@ -11,7 +12,7 @@ and used as a reference baseline.
 | [tools.fieldmaps.io](https://tools.fieldmaps.io/) | Topology Cleaner, Edge Extender, Changelog — run in browser |
 | DuckDB (spatial ext) | All data inspection, transformation, attribute work, validation |
 | uv | All Python scripts (`uv run`); `uv add` for dependencies |
-| HDX API | Fetch previous COD-AB release into `reference/` |
+| `prepare.py` | Fetches HDX reference, detects version, converts all inputs to GeoParquet |
 
 DuckDB spatial: `duckdb -c "INSTALL spatial; LOAD spatial; ..."` or use `:memory:` shell.
 
@@ -21,56 +22,47 @@ DuckDB spatial: `duckdb -c "INSTALL spatial; LOAD spatial; ..."` or use `:memory
 
 Run this at the start of every session.
 
-### 1. Check or fetch reference data
-
-If `reference/` is empty, infer the country ISO3 from `input/` filenames and fetch from HDX:
+### 1. Identify the active country
 
 ```bash
-ls reference/ 2>/dev/null || echo "MISSING — need to fetch"
+ls -d */
 ```
 
-To list available resources for a country:
+If multiple countries exist, ask the user which one to work on. Set `{iso3}` = the country
+code (e.g. `syr`). The version numbers are derived from the data — `{ref_version}` is the
+previous HDX release (e.g. `v02`), `{version}` is the new release being prepared (e.g. `v03`).
+
+### 2. Run prepare.py (if not already done)
+
+Check whether GeoParquet files exist:
 
 ```bash
-uv run python3 -c "
-import urllib.request, json, os, sys
-iso3 = sys.argv[1].lower()
-url = f'https://data.humdata.org/api/3/action/package_show?id=cod-ab-{iso3}'
-req = urllib.request.Request(url, headers={'Authorization': os.environ.get('HDX_API_KEY','')})
-data = json.loads(urllib.request.urlopen(req).read())
-resources = data['result']['resources']
-for r in resources:
-    print(r['name'], r['url'])
-" syr
+ls {iso3}/
 ```
 
-Download the GDB resource to `reference/`.
-
-### 2. Inspect input/
-
-List all files:
+If only `raw/` is present (no versioned subdirectories), run:
 
 ```bash
-find input/ -type f | sort
+uv run python3 prepare.py {iso3}
 ```
 
-For each file, query with DuckDB:
+This fetches the HDX GDB, detects `{ref_version}`, increments to `{version}`, converts all
+layers to GeoParquet (GEOPARQUET_VERSION BOTH, ZSTD-15), and outputs:
+- `{iso3}/{ref_version}/` — reference layers from HDX
+- `{iso3}/{version}/` — input layers from `{iso3}/raw/`
+
+Input files are named `{iso3}_{source_stem}.parquet`. After confirming the admin level
+mapping, rename them to `{iso3}_admin{N}.parquet`.
+
+### 3. Check for existing progress
 
 ```bash
-duckdb -c "INSTALL spatial; LOAD spatial;
-  SELECT COUNT(*) AS features FROM ST_Read('input/path/to/file.shp');
-  DESCRIBE SELECT * FROM ST_Read('input/path/to/file.shp');"
+cat {iso3}/{version}/REPORT.md 2>/dev/null || echo "No report yet"
+find {iso3}/{version}/ -type f | sort
 ```
 
-Report: file names, feature counts, column names, CRS, sample p-codes.
-
-### 3. Scan work/ for progress
-
-```bash
-find work/ -type f 2>/dev/null | sort
-```
-
-Build a per-level status table — mark ✓ if files exist, – if not:
+If `REPORT.md` exists, read it to understand decisions already made and skip re-confirming
+completed verification gates. Build a per-level status table — mark ✓ if files exist, – if not:
 
 | Level | 00-compare | 01-topology | 02-schema | 03-codes | 04-attributes |
 | --- | --- | --- | --- | --- | --- |
@@ -80,24 +72,46 @@ Build a per-level status table — mark ✓ if files exist, – if not:
 | admin1 | derived | derived | ✓/– | ✓/– | ✓/– |
 | admin0 | derived | derived | ✓/– | ✓/– | ✓/– |
 
-### 4. Confirm and propose
+### 4. Inspect input GeoParquet
 
-Confirm the admin level mapping and ISO2/ISO3 codes with the user, then propose the next step.
+For each file in `{iso3}/{version}/`:
+
+```bash
+duckdb -c "INSTALL spatial; LOAD spatial;
+  SELECT COUNT(*) AS features FROM '{iso3}/{version}/{iso3}_{stem}.parquet';
+  DESCRIBE SELECT * FROM '{iso3}/{version}/{iso3}_{stem}.parquet';"
+```
+
+Report: file names, feature counts, column names, sample p-codes.
+
+### 5. Confirm and propose
+
+Confirm the admin level mapping and ISO2/ISO3 codes with the user, rename input GeoParquet
+files accordingly, then propose the next step.
 
 ---
 
 ## Directory Structure
 
 ```text
-input/           # Immutable — raw files from source authority
-reference/       # Previous COD-AB from HDX (auto-fetched; cached)
-work/
-  00-compare/    # topo-tools Changelog outputs ({iso3}_admin{N}/ per level)
-  01-topology/   # topo-tools Topology Cleaner outputs ({iso3}_admin{N}.geojson)
-  02-schema/     # Schema-mapped, column-reordered ({iso3}_admin{N}.gpkg)
-  03-codes/      # P-codes assigned and validated ({iso3}_admin{N}.gpkg)
-  04-attributes/ # All attributes complete ({iso3}_admin{N}.gpkg)
-output/          # Final COD-AB package (cod_ab_{iso3}_{version}/)
+{iso3}/
+  raw/                      # Immutable — raw files from source authority
+  {ref_version}/            # Reference GeoParquet from HDX (e.g. v02/)
+    {iso3}_admin0.parquet
+    {iso3}_admin1.parquet
+    {iso3}_admin2.parquet
+    {iso3}_admin3.parquet
+    {iso3}_neighborhoods.parquet   # or other reference-specific layers
+  {version}/                # New release (e.g. v03/)
+    {iso3}_admin3.parquet   # Input GeoParquet (renamed after level mapping confirmed)
+    {iso3}_admin4.parquet
+    00-compare/             # Changelog outputs ({iso3}_admin{N}/ per level)
+    01-topology/            # Topology Cleaner outputs ({iso3}_admin{N}.geojson)
+    02-schema/              # Schema-mapped, column-reordered ({iso3}_admin{N}.gpkg)
+    03-codes/               # P-codes assigned and validated ({iso3}_admin{N}.gpkg)
+    04-attributes/          # All attributes complete ({iso3}_admin{N}.gpkg)
+    output/                 # Final COD-AB package
+    REPORT.md               # Running log of decisions + shareable release summary
 ```
 
 ---
@@ -106,7 +120,9 @@ output/          # Final COD-AB package (cod_ab_{iso3}_{version}/)
 
 **Admin3 is the authoritative geometry** (for Syria; identify the base level for other countries).
 Admin0/1/2 are **derived** from admin3 by dissolving — they skip topo-tools entirely.
-Admin4 (HDS for Syria) is a special case: partial coverage, unclean topology.
+Admin4 is a special case: it may have partial coverage and unclean topology, and may be a new
+dataset replacing a differently-named reference layer (e.g., `syr_neighborhoods`). Confirm the
+reference layer name to use for Stage 0 comparison at session start.
 
 ### Deriving admin0/1/2 (DuckDB)
 
@@ -123,10 +139,10 @@ GROUP BY adm2_name, adm2_pcode, adm1_name, adm1_pcode,
          adm0_name, adm0_pcode, valid_on, valid_to, version, lang, lang1, lang2, lang3;
 ```
 
-### Admin4 / HDS (three-step process)
+### Admin4 (three-step process)
 
 1. **Topology Cleaner** — upload admin4 to [tools.fieldmaps.io](https://tools.fieldmaps.io/),
-   clean internal topology, download to `work/01-topology/{iso3}_admin4.geojson`
+   clean internal topology, download to `{iso3}/{version}/01-topology/{iso3}_admin4.geojson`
 
 1. **Edge Extender** — upload cleaned admin4 + final admin3, extend admin4 boundaries to
    fill admin3 coverage gaps, download result
@@ -138,6 +154,68 @@ GROUP BY adm2_name, adm2_pcode, adm1_name, adm1_pcode,
    FROM admin4 a4
    JOIN admin3 a3 ON ST_Intersects(a4.geom, a3.geom);
    ```
+
+---
+
+## REPORT.md
+
+`{iso3}/{version}/REPORT.md` serves two purposes: it is the resumability record (decisions
+made, gates approved) and the shareable release summary. Claude writes to it after each
+verification gate and finalizes it in Stage 6.
+
+### Template
+
+```markdown
+# COD-AB Processing Report — {Country} ({ISO3}) {version}
+
+**Source authority:** {name}
+**Processing date:** {date}
+**Previous release:** {reference layer names and feature counts}
+
+## Input Data
+| Level | File | Features |
+| --- | --- | --- |
+
+## Admin Level Mapping
+| COD-AB level | Source | Geometry |
+| --- | --- | --- |
+
+ISO2: {iso2} / ISO3: {iso3}
+
+## Stage 0 — Comparison
+| Level | Reference | Input | Unchanged | Modified | New | Removed |
+| --- | --- | --- | --- | --- | --- | --- |
+
+P-code inheritance plan: {description}
+
+## Stage 2 — Column Mapping ✓ approved {date}
+| Source column | COD-AB column | Notes |
+| --- | --- | --- |
+
+Languages: lang={code}, lang1={code}, ...
+
+## Stage 3 — P-codes ✓ approved {date}
+| Level | Inherited | Generated |
+| --- | --- | --- |
+
+## Stage 4 — Attribute Flags ✓ approved {date}
+{Summary of name changes reviewed and any flags accepted}
+
+## Stage 5 — Validation
+| Check | admin0 | admin1 | admin2 | admin3 | admin4 |
+| --- | --- | --- | --- | --- | --- |
+
+Accepted warnings: {list with justification, or "none"}
+
+## Output Summary
+| Level | Features | Notes |
+| --- | --- | --- |
+
+valid_on: {date} / valid_to: null / version: {version}
+
+## Known Caveats
+{Any accepted deviations from spec, data quality notes, etc.}
+```
 
 ---
 
@@ -183,22 +261,25 @@ Admin0 additionally has `iso2`, `iso3` before `valid_on`.
 
 ## Workflow
 
-### Stage 0 — Compare (`work/00-compare/`)
+### Stage 0 — Compare (`{iso3}/{version}/00-compare/`)
 
 Applies to admin3 + admin4 (derived levels have no direct source to compare).
+For admin4, use the corresponding reference layer even if it has a different name (e.g.,
+`syr_neighborhoods` instead of `syr_admin4`). Note in the report that it is a replacement
+dataset, not a like-for-like comparison.
 
 1. Open [tools.fieldmaps.io](https://tools.fieldmaps.io/) → **Changelog**
 
-1. For each level: upload the reference layer (from `reference/`) and the corresponding input
-   layer side by side
+1. For each level: upload the reference GeoParquet (from `{iso3}/{ref_version}/`) and the
+   corresponding input GeoParquet (from `{iso3}/{version}/`) side by side
 
-1. Download crosswalk CSV + overlay GeoJSON to `work/00-compare/{iso3}_admin{N}/`
+1. Download crosswalk CSV + overlay GeoJSON to `{iso3}/{version}/00-compare/{iso3}_admin{N}/`
 
 1. Read crosswalk with DuckDB:
 
    ```bash
    duckdb -c "SELECT relationship, COUNT(*) FROM
-     read_csv('work/00-compare/syr_admin3/crosswalk.csv') GROUP BY 1 ORDER BY 2 DESC;"
+     read_csv('{iso3}/{version}/00-compare/{iso3}_admin3/crosswalk.csv') GROUP BY 1 ORDER BY 2 DESC;"
    ```
 
 1. Summarize: counts of unchanged / modified / new / removed per level
@@ -206,20 +287,22 @@ Applies to admin3 + admin4 (derived levels have no direct source to compare).
 1. Document p-code inheritance plan: unchanged features inherit their existing input code;
    new features are flagged for assignment in Stage 3
 
+1. **Write to REPORT.md**: Stage 0 comparison table + p-code inheritance plan
+
 ---
 
-### Stage 1 — Topology (`work/01-topology/`)
+### Stage 1 — Topology (`{iso3}/{version}/01-topology/`)
 
 Applies to admin3 (base level) + admin4 (special case — see Geometry Model above).
 Derived levels (admin0/1/2) skip this stage.
 
 1. Open [tools.fieldmaps.io](https://tools.fieldmaps.io/) → **Topology Cleaner**
 
-1. Upload the admin3 layer; review the issues table (gaps, overlaps, slivers). Export the
+1. Upload the admin3 GeoParquet; review the issues table (gaps, overlaps, slivers). Export the
    issues CSV if you want Claude to recommend gap-width and sliver-tolerance settings.
 
 1. Adjust parameters, verify fixes on the map, download cleaned file to
-   `work/01-topology/{iso3}_admin3.geojson`
+   `{iso3}/{version}/01-topology/{iso3}_admin3.geojson`
 
 1. Repeat for admin4 (plus Edge Extender step — see Geometry Model)
 
@@ -229,16 +312,16 @@ Derived levels (admin0/1/2) skip this stage.
    duckdb -c "INSTALL spatial; LOAD spatial;
      SELECT COUNT(*) FILTER (WHERE geom IS NULL) AS null_geoms,
             COUNT(*) FILTER (WHERE NOT ST_IsValid(geom)) AS invalid_geoms
-     FROM ST_Read('work/01-topology/syr_admin3.geojson');"
+     FROM ST_Read('{iso3}/{version}/01-topology/{iso3}_admin3.geojson');"
    ```
 
 ---
 
-### Stage 2 — Schema (`work/02-schema/`)
+### Stage 2 — Schema (`{iso3}/{version}/02-schema/`)
 
 Applies to all levels. Admin0/1/2 are derived from admin3 here.
 
-1. Claude reads `work/01-topology/` files with DuckDB and lists all columns
+1. Claude reads `{iso3}/{version}/01-topology/` files with DuckDB and lists all columns
 
 1. Claude proposes a mapping: source column → COD-AB column name (or DROP)
 
@@ -246,11 +329,14 @@ Applies to all levels. Admin0/1/2 are derived from admin3 here.
 
 1. Claude derives admin0/1/2 via DuckDB dissolve of the cleaned admin3 (see Geometry Model)
 
-1. Claude writes all levels to `work/02-schema/{iso3}_admin{N}.gpkg` with correct column order
+1. Claude writes all levels to `{iso3}/{version}/02-schema/{iso3}_admin{N}.gpkg` with correct
+   column order
+
+1. **Write to REPORT.md**: column mapping table + approved language codes
 
 ---
 
-### Stage 3 — Codes (`work/03-codes/`)
+### Stage 3 — Codes (`{iso3}/{version}/03-codes/`)
 
 Applies to all levels simultaneously.
 
@@ -271,11 +357,13 @@ Applies to all levels simultaneously.
 
 1. **Verification gate**: show count of inherited vs. generated codes per level; user confirms
 
-1. Writes to `work/03-codes/`
+1. Writes to `{iso3}/{version}/03-codes/`
+
+1. **Write to REPORT.md**: p-code counts table
 
 ---
 
-### Stage 4 — Attributes (`work/04-attributes/`)
+### Stage 4 — Attributes (`{iso3}/{version}/04-attributes/`)
 
 Applies to all levels simultaneously.
 
@@ -307,13 +395,15 @@ Applies to all levels simultaneously.
 
 1. **Verification gate**: show summary of name changes and any unresolved flags; user confirms
 
-1. Writes to `work/04-attributes/`
+1. Writes to `{iso3}/{version}/04-attributes/`
+
+1. **Write to REPORT.md**: attribute flag summary
 
 ---
 
 ### Stage 5 — Validation
 
-Run the full COD-AB check suite via DuckDB across all `work/04-attributes/` files.
+Run the full COD-AB check suite via DuckDB across all `{iso3}/{version}/04-attributes/` files.
 Report a pass/fail table per check per level. Fix and re-run until all MUST rules pass.
 Document any accepted warnings with justification.
 
@@ -327,15 +417,17 @@ Checks:
 - `valid_on` non-null and row-consistent; `valid_to` null; `version` format and row-consistent
 - Child polygon containment within parent (cross-layer spatial join)
 
+**Write to REPORT.md**: validation results table + accepted warnings with justification
+
 ---
 
-### Stage 6 — Package (`output/`)
+### Stage 6 — Package (`{iso3}/{version}/output/`)
 
-1. Create `output/cod_ab_{iso3}_{version}/`
+1. Create `{iso3}/{version}/output/`
 1. Write one GeoPackage per level with spec-correct filename: `{iso3}_admin{N}`
 1. Optionally export Shapefile and GeoJSON alongside
-1. Generate release notes: feature counts added / removed / modified per level vs. reference,
-   summary of p-codes generated, any known caveats or accepted warnings
+1. **Finalize REPORT.md**: add Output Summary section (final feature counts, valid_on, version)
+   and copy to `{iso3}/{version}/output/REPORT.md`
 
 ---
 
@@ -343,8 +435,8 @@ Checks:
 
 These are cases where Claude's judgment adds value beyond running queries:
 
-- **Excel cross-reference**: Read Excel files in `input/` with DuckDB `read_xlsx()` to cross-check
-  attributes against shapefile columns
+- **Excel cross-reference**: Read Excel files in `{iso3}/raw/` with DuckDB `read_xlsx()` to
+  cross-check attributes against shapefile columns
 - **Transliteration consistency**: Spot-check Arabic → English romanization for consistency across
   features and levels
 - **Name ambiguity**: Flag names that appear under different spellings across levels or within a level
@@ -357,10 +449,10 @@ These are cases where Claude's judgment adds value beyond running queries:
 
 ## Verification Gates — Never Skip
 
-| Gate | When |
-| --- | --- |
-| Admin level mapping + ISO2/ISO3 | Session start |
-| Column mapping + language codes | Stage 2 |
-| P-codes inherited vs. generated (counts) | Stage 3 |
-| Name change summary + unresolved flags | Stage 4 |
-| Warnings accepted in validation | Stage 5 |
+| Gate | When | REPORT.md section |
+| --- | --- | --- |
+| Admin level mapping + ISO2/ISO3 | Session start | Admin Level Mapping |
+| Column mapping + language codes | Stage 2 | Stage 2 |
+| P-codes inherited vs. generated (counts) | Stage 3 | Stage 3 |
+| Name change summary + unresolved flags | Stage 4 | Stage 4 |
+| Warnings accepted in validation | Stage 5 | Stage 5 |

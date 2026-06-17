@@ -1,8 +1,15 @@
-# data directories
-input/
-reference/
-work/
-output/
+# Raw source data and large binary geo files
+*/raw/
+*.parquet
+*.gpkg
+*.geojson
+
+# Pipeline stage outputs (large binary)
+*/01-topology/
+*/02-schema/
+*/03-codes/
+*/04-attributes/
+*/output/
 
 # local config
 .claude/
@@ -20,6 +27,7 @@ output/
 __pycache__/
 *.py[cod]
 .venv/
+.ruff_cache/
 
 # macOS
 .DS_Store
