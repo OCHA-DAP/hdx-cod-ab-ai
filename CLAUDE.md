@@ -134,7 +134,7 @@ files accordingly, then propose the next step.
     03-schema/              # Schema-mapped, column-reordered ({iso3}_admin{N}.parquet)
     04-codes/               # P-codes assigned and validated ({iso3}_admin{N}.parquet)
     05-attributes/          # All attributes complete ({iso3}_admin{N}.parquet)
-    output/                 # Final COD-AB package
+    06-output/              # Final COD-AB package
     REPORT.md               # Running log of decisions + shareable release summary
 ```
 
@@ -452,13 +452,13 @@ Checks:
 
 ---
 
-### Stage 7 — Package (`{iso3}/{version}/output/`)
+### Stage 7 — Package (`{iso3}/{version}/06-output/`)
 
-1. Create `{iso3}/{version}/output/`
+1. Create `{iso3}/{version}/06-output/`
 1. Write one GeoParquet per level with spec-correct filename: `{iso3}_admin{N}.parquet`
 1. Optionally export Shapefile and GeoJSON alongside
 1. **Finalize REPORT.md**: add Output Summary section (final feature counts, valid_on, version)
-   and copy to `{iso3}/{version}/output/REPORT.md`
+   and copy to `{iso3}/{version}/06-output/REPORT.md`
 
 ---
 
