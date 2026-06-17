@@ -505,7 +505,17 @@ Checks:
 1. Create `{iso3}/{version}/06-output/`
 1. Write one GeoParquet per level with spec-correct filename: `{iso3}_admin{N}.parquet`.
    Drop all retained source columns — output must contain only COD-AB spec columns.
-1. Optionally export Shapefile and GeoJSON alongside
+1. Export a zipped GeoDatabase: convert all levels into a single `{iso3}_{version}.gdb`,
+   then zip it to `{iso3}_{version}.gdb.zip` and delete the unzipped folder:
+   ```bash
+   for level in admin0 admin1 admin2 admin3; do
+     gdal vector convert \
+       "{iso3}/{version}/06-output/{iso3}_${level}.parquet" \
+       "{iso3}/{version}/06-output/{iso3}_{version}.gdb" \
+       --layer "{iso3}_${level}" --append --of OpenFileGDB
+   done
+   cd {iso3}/{version}/06-output && zip -r {iso3}_{version}.gdb.zip {iso3}_{version}.gdb && rm -rf {iso3}_{version}.gdb
+   ```
 1. **Finalize REPORT.md**: add Output Summary section (final feature counts, valid_on, version)
    and copy to `{iso3}/{version}/06-output/REPORT.md`
 
