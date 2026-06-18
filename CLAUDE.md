@@ -134,9 +134,9 @@ files accordingly, then propose the next step.
   {version}/                # New release (e.g. v03/)
     00-inputs/              # Raw inputs converted to GeoParquet ({iso3}_admin{N}.parquet)
     01-schema/              # Schema-mapped: admin3 + admin4; admin1/2 for cross-checks
-    02-compare/             # Changelog outputs ({iso3}_admin{N}/ per level)
-    03-codes/               # P-codes assigned — admin3 (and admin4) only
-    04-topology/            # Topology Cleaner outputs ({iso3}_admin{N}.parquet or .geojson)
+    02-compare/             # Changelog outputs ({iso3}_admin{N}_change.csv per level)
+    03-codes/               # Names checked + p-codes assigned — admin3 (and admin4) only
+    04-topology/            # Topology Cleaner outputs ({iso3}_admin{N}.parquet, {iso3}_admin{N}_issues.parquet)
     05-attributes/          # All attributes complete ({iso3}_admin{N}.parquet)
     06-output/              # Final COD-AB package
     REPORT.md               # Running log of decisions + shareable release summary
@@ -170,7 +170,7 @@ GROUP BY adm2_name, adm2_pcode, adm1_name, adm1_pcode,
 ### Admin4 (three-step process)
 
 1. **Topology Cleaner** — upload admin4 to [tools.fieldmaps.io](https://tools.fieldmaps.io/),
-   clean internal topology, download both outputs to `{iso3}/{version}/04-topology/{iso3}_admin4/`
+   clean internal topology, download both outputs to `{iso3}/{version}/04-topology/`
    (cleaned → `{iso3}_admin4.parquet`, issues → `{iso3}_admin4_issues.parquet`)
 
 1. **Edge Extender** — upload cleaned admin4 + final admin3, extend admin4 boundaries to
@@ -223,12 +223,11 @@ Languages: lang={code}, lang1={code}, ...
 
 P-code inheritance plan: {description}
 
-## Stage 3 — P-codes ✓ approved {date}
+## Stage 3 — Names & Codes ✓ approved {date}
 | Level | Inherited | Generated |
 | --- | --- | --- |
 
-## Stage 5 — Attribute Flags ✓ approved {date}
-{Summary of name changes reviewed and any flags accepted}
+Name/pcode flags: {summary of mismatches reviewed and any accepted}
 
 ## Stage 6 — Validation
 | Check | admin0 | admin1 | admin2 | admin3 | admin4 |
@@ -328,14 +327,14 @@ dataset, not a like-for-like comparison.
 1. For each level: upload the reference GeoParquet (from `{iso3}/{ref_version}/`) and the
    corresponding input GeoParquet (from `{iso3}/{version}/01-schema/`) side by side
 
-1. Download crosswalk CSV to `{iso3}/{version}/02-compare/{iso3}_admin{N}/`.
+1. Download crosswalk CSV to `{iso3}/{version}/02-compare/{iso3}_admin{N}_change.csv`.
    fieldmaps.io downloads often land at the repo root — move them before processing.
 
 1. Read crosswalk with DuckDB:
 
    ```bash
    duckdb -c "SELECT relationship_class, COUNT(*) FROM
-     read_csv('{iso3}/{version}/02-compare/{iso3}_admin3/crosswalk.csv') GROUP BY 1 ORDER BY 2 DESC;"
+     read_csv('{iso3}/{version}/02-compare/{iso3}_admin3_change.csv') GROUP BY 1 ORDER BY 2 DESC;"
    ```
 
 1. Summarize: counts of unchanged / modified / new / removed per level
@@ -347,11 +346,39 @@ dataset, not a like-for-like comparison.
 
 ---
 
-### Stage 3 — Codes (`{iso3}/{version}/03-codes/`)
+### Stage 3 — Names & Codes (`{iso3}/{version}/03-codes/`)
 
 Applies to admin3 (and admin4 if present). Admin0/1/2 are derived later in Stage 5.
 
 1. Claude joins schema-mapped files (from `01-schema/`) with crosswalk data from `02-compare/`
+
+1. Cross-check admin3's embedded adm1/adm2 name and pcode values against:
+   - The current version's schema-normalized admin1/2 (`{iso3}/{version}/01-schema/`) —
+     flags naming or pcode mismatches introduced by the new source authority
+   - The previous release (`{iso3}/{ref_version}/`) — flags any changes vs. previous admin1/2
+
+1. Spatial majority join: for each admin3 feature, find which source admin2 (and admin1) it
+   overlaps most by area, and flag any mismatch with the embedded adm2_pcode/adm1_pcode:
+
+   ```sql
+   SELECT a3.adm3_pcode, a3.adm3_name,
+          a3.adm2_pcode AS embedded_adm2,
+          a2.adm2_pcode AS spatial_adm2,
+          ST_Area(ST_Intersection(a3.geometry, a2.geometry)) /
+            ST_Area(a3.geometry) AS overlap_frac
+   FROM read_parquet('{iso3}/{version}/01-schema/{iso3}_admin3.parquet') a3
+   JOIN read_parquet('{iso3}/{version}/01-schema/{iso3}_admin2.parquet') a2
+     ON ST_Intersects(a3.geometry, a2.geometry)
+   QUALIFY ROW_NUMBER() OVER (
+     PARTITION BY a3.adm3_pcode ORDER BY overlap_frac DESC) = 1
+   HAVING a3.adm2_pcode != a2.adm2_pcode;
+   ```
+
+   Mismatches are expected where new admin2 districts were carved out of old ones — verify
+   each case is intentional and document in REPORT.md.
+
+1. Name normalization: trim whitespace; flag ALL CAPS and all-lowercase names for review;
+   check cross-level consistency (same unit name everywhere it appears)
 
 1. Inherited codes: existing features → keep existing input p-code (if spec-valid); fix malformed pcodes using reference crosswalk
 
@@ -374,11 +401,11 @@ Applies to admin3 (and admin4 if present). Admin0/1/2 are derived later in Stage
    - `fixed_malformed` — pcode in source was malformed (e.g. "01" instead of "SY010000")
    - `fixed_wrong_adm2` — source embedded wrong admin2 pcode (detected via spatial join); pcode updated
 
-1. **Verification gate**: show count by `change_type`; user reviews CSV and confirms
+1. **Verification gate**: show count by `change_type` and name/pcode mismatch flags; user reviews CSV and confirms
 
 1. Writes GeoParquet to `{iso3}/{version}/03-codes/`
 
-1. **Write to REPORT.md**: p-code counts table
+1. **Write to REPORT.md**: p-code counts table + name/pcode flag summary
 
 ---
 
@@ -394,7 +421,7 @@ Derived levels (admin0/1/2) skip this stage.
    sliver-tolerance settings.
 
 1. Adjust parameters, verify fixes on the map, download both outputs to
-   `{iso3}/{version}/04-topology/{iso3}_admin3/`:
+   `{iso3}/{version}/04-topology/`:
    - `{iso3}_admin3_cleaned.parquet` → rename to `{iso3}_admin3.parquet`
    - `{iso3}_admin3_issues.parquet` → keep as-is (documents what was fixed)
 
@@ -409,7 +436,7 @@ Derived levels (admin0/1/2) skip this stage.
      SELECT COUNT(*) FILTER (WHERE geometry IS NULL) AS null_geoms,
             COUNT(*) FILTER (WHERE NOT ST_IsValid(geometry)) AS invalid_geoms,
             COUNT(*) FILTER (WHERE ST_GeometryType(geometry) NOT IN ('POLYGON','MULTIPOLYGON')) AS wrong_type
-     FROM read_parquet('{iso3}/{version}/04-topology/{iso3}_admin3/{iso3}_admin3.parquet');"
+     FROM read_parquet('{iso3}/{version}/04-topology/{iso3}_admin3.parquet');"
    ```
 
 ---
@@ -420,34 +447,6 @@ Applies to all levels simultaneously. Admin0/1/2 are dissolved from admin3 here 
 first and only time (see Geometry Model).
 
 1. Derive admin0/1/2 via DuckDB dissolve of the final admin3 from `04-topology/` (or `03-codes/` if topology not yet run)
-
-1. Cross-check admin3's embedded adm1/adm2 name and pcode values against:
-   - The current version's schema-normalized admin1/2 (`{iso3}/{version}/01-schema/`) —
-     flags naming or pcode mismatches introduced by the new source authority
-   - The previous release (`{iso3}/{ref_version}/`) — flags any changes vs. previous admin1/2
-
-1. Spatial majority join: for each admin3 feature, find which source admin2 (and admin1) it
-   overlaps most by area, and flag any mismatch with the embedded adm2_pcode/adm1_pcode:
-
-   ```sql
-   SELECT a3.adm3_pcode, a3.adm3_name,
-          a3.adm2_pcode AS embedded_adm2,
-          a2.adm2_pcode AS spatial_adm2,
-          ST_Area(ST_Intersection(a3.geometry, a2.geometry)) /
-            ST_Area(a3.geometry) AS overlap_frac
-   FROM admin3 a3
-   JOIN read_parquet('{iso3}/{version}/01-schema/{iso3}_admin2.parquet') a2
-     ON ST_Intersects(a3.geometry, a2.geometry)
-   QUALIFY ROW_NUMBER() OVER (
-     PARTITION BY a3.adm3_pcode ORDER BY overlap_frac DESC) = 1
-   HAVING a3.adm2_pcode != a2.adm2_pcode;
-   ```
-
-   Mismatches are expected where new admin2 districts were carved out of old ones — verify
-   each case is intentional and document in REPORT.md.
-
-1. Name normalization: trim whitespace; flag ALL CAPS and all-lowercase names for review;
-   check cross-level consistency (same unit name everywhere it appears)
 
 1. Compute `area_sqkm`:
 
@@ -472,11 +471,9 @@ first and only time (see Geometry Model).
 1. Cross-layer ancestor consistency check: verify `adm{L}_name` and `adm{L}_pcode` values
    on each row match the corresponding parent feature across all levels
 
-1. **Verification gate**: show summary of name changes and any unresolved flags; user confirms
-
 1. Writes to `{iso3}/{version}/05-attributes/`
 
-1. **Write to REPORT.md**: attribute flag summary
+1. **Write to REPORT.md**: output metadata (valid_on, version, feature counts per level)
 
 ---
 
@@ -543,6 +540,5 @@ These are cases where Claude's judgment adds value beyond running queries:
 | --- | --- | --- |
 | Admin level mapping + ISO2/ISO3 | Session start | Admin Level Mapping |
 | Column mapping + language codes | Stage 1 | Stage 1 |
-| P-codes inherited vs. generated (counts) | Stage 3 | Stage 3 |
-| Name change summary + unresolved flags | Stage 5 | Stage 5 |
+| P-codes inherited vs. generated + name/pcode mismatch flags | Stage 3 | Stage 3 |
 | Warnings accepted in validation | Stage 6 | Stage 6 |
