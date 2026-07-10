@@ -130,9 +130,17 @@ def resolve_src(gdb_path: Path, layers: list[str]) -> tuple[Path, bool]:
     return gpkg_path, True
 
 
+def normalize_version(version: str) -> str:
+    """Normalize version string to 'vNN' form: 'V_01' → 'v01', 'v02' → 'v02'."""
+    cleaned = version.lower().lstrip("v").lstrip("_").replace("_", ".")
+    major = int(cleaned.split(".")[0])
+    return f"v{major:02d}"
+
+
 def increment_version(version: str) -> str:
-    """Increment the major version number: 'v02' → 'v03'."""
-    major = int(version.lstrip("v").split(".")[0])
+    """Increment the major version number: 'v02' → 'v03', 'V_01' → 'v02'."""
+    cleaned = version.lower().lstrip("v").lstrip("_").replace("_", ".")
+    major = int(cleaned.split(".")[0])
     return f"v{major + 1:02d}"
 
 
@@ -168,14 +176,14 @@ def main() -> None:
     args = parser.parse_args()
     iso3 = args.iso3.lower()
 
-    country_dir = Path(iso3)
-    country_dir.mkdir(exist_ok=True)
+    country_dir = Path("data") / iso3
+    country_dir.mkdir(parents=True, exist_ok=True)
 
     gdb = download_gdb(iso3, country_dir)
 
     # All subprocess calls before DuckDB is initialized (avoids GDAL library conflicts)
     layers = get_layers(gdb)
-    ref_version = get_version(gdb, layers)
+    ref_version = normalize_version(get_version(gdb, layers))
     new_version = increment_version(ref_version)
     log.info("Reference: %s  →  New: %s\n", ref_version, new_version)
 
