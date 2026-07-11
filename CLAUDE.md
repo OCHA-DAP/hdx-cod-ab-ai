@@ -9,13 +9,19 @@ work is scoped by country directory (e.g. `data/syr/`, `data/gab/`).
 
 | Tool | Purpose |
 | --- | --- |
-| [tools.fieldmaps.io](https://tools.fieldmaps.io/) | Topology Cleaner, Edge Extender, Changelog — run in browser |
+| [tools.fieldmaps.io](https://tools.fieldmaps.io/) | Topology Cleaner, Edge Extender, Changelog — browser UI |
+| [`topo-tools`](https://pypi.org/project/topo-tools/) | Same operations (`clean`, `extend`, `match`, `change`) as a scriptable Python CLI — `uv add topo-tools` / `uv run topo-tools <command> --help` |
 | DuckDB (spatial ext) | All data inspection, transformation, attribute work, validation |
 | uv | All Python scripts (`uv run scripts/foo.py`); `uv add` for dependencies |
 | `scripts/prepare.py` | Fetches HDX reference, detects version, converts all inputs to GeoParquet |
 | `scripts/m49.py` | Downloads UN M49 country names in all 6 official UN languages → `data/m49.parquet` |
 
 DuckDB spatial: `duckdb -c "INSTALL spatial; LOAD spatial; ..."` or use `:memory:` shell.
+
+> **Web vs CLI**: `tools.fieldmaps.io` and `topo-tools` are equivalent implementations of the same
+> operations — pick whichever is more convenient for a given step (`clean` ≈ Topology Cleaner,
+> `extend` ≈ Edge Extender, `change` ≈ Changelog). Note in REPORT.md which was used. `topo-tools clean`
+> reports slivers but never auto-fixes them, same as the web tool's sliver handling.
 
 > **Multi-statement queries** (CREATE TABLE chains, CTEs): use heredoc form — `duckdb :memory: << 'EOF' ... EOF` — the `-c` flag does not support them reliably.
 
@@ -173,12 +179,14 @@ GROUP BY adm2_name, adm2_pcode, adm1_name, adm1_pcode,
 
 ### Admin4 (three-step process)
 
-1. **Topology Cleaner** — upload admin4 to [tools.fieldmaps.io](https://tools.fieldmaps.io/),
-   clean internal topology, download both outputs to `data/{iso3}/{version}/04-topology/`
+1. **Topology Cleaner** — via web (upload admin4 to [tools.fieldmaps.io](https://tools.fieldmaps.io/),
+   clean internal topology, download both outputs) or CLI (`uv run topo-tools clean ...`).
+   Either way, land both outputs in `data/{iso3}/{version}/04-topology/`
    (cleaned → `{iso3}_admin4.parquet`, issues → `{iso3}_admin4_issues.parquet`)
 
-1. **Edge Extender** — upload cleaned admin4 + final admin3, extend admin4 boundaries to
-   fill admin3 coverage gaps, download result
+1. **Edge Extender** — via web (upload cleaned admin4 + final admin3, extend admin4 boundaries
+   to fill admin3 coverage gaps) or CLI (`uv run topo-tools extend ...`), either way producing
+   the extended result
 
 1. **Clip to admin3** with DuckDB:
 
@@ -393,13 +401,15 @@ For admin4, use the corresponding reference layer even if it has a different nam
 `syr_neighborhoods` instead of `syr_admin4`). Note in the report that it is a replacement
 dataset, not a like-for-like comparison.
 
-1. Open [tools.fieldmaps.io](https://tools.fieldmaps.io/) → **Changelog**
+1. Via web: open [tools.fieldmaps.io](https://tools.fieldmaps.io/) → **Changelog**. Via CLI:
+   `uv run topo-tools change ...` (see `--help` for arguments)
 
-1. For each level: upload the reference GeoParquet (from `data/{iso3}/{ref_version}/`) and the
-   corresponding input GeoParquet (from `data/{iso3}/{version}/01-schema/`) side by side
+1. For each level: run the reference GeoParquet (from `data/{iso3}/{ref_version}/`) against the
+   corresponding input GeoParquet (from `data/{iso3}/{version}/01-schema/`) — side by side upload
+   in the web tool, or as CLI arguments
 
-1. Download crosswalk CSV to `data/{iso3}/{version}/02-compare/{iso3}_admin{N}_change.csv`.
-   fieldmaps.io downloads often land at the repo root — move them before processing.
+1. Produce the crosswalk CSV at `data/{iso3}/{version}/02-compare/{iso3}_admin{N}_change.csv`.
+   fieldmaps.io web downloads often land at the repo root — move them before processing.
 
 1. Read crosswalk with DuckDB:
 
@@ -493,18 +503,19 @@ Applies to admin3 (and admin4 if present). Admin0/1/2 are derived later in Stage
 Applies to admin3 (base level) + admin4 (special case — see Geometry Model above).
 Derived levels (admin0/1/2) skip this stage.
 
-1. Open [tools.fieldmaps.io](https://tools.fieldmaps.io/) → **Topology Cleaner**
+1. Via web: open [tools.fieldmaps.io](https://tools.fieldmaps.io/) → **Topology Cleaner**. Via
+   CLI: `uv run topo-tools clean data/{iso3}/{version}/03-codes/{iso3}_admin3.parquet ...`
 
-1. Upload the admin3 GeoParquet from `03-codes/`; review the issues table (gaps, overlaps,
-   slivers). Export the issues CSV if you want Claude to recommend gap-width and
-   sliver-tolerance settings.
+1. Review the issues table/output (gaps, overlaps, slivers). Export or inspect the issues CSV if
+   you want Claude to recommend gap-width and sliver-tolerance settings. Note: `topo-tools clean`
+   reports slivers but never auto-fixes them, by design — same as the web tool.
 
-1. Adjust parameters, verify fixes on the map, download both outputs to
-   `data/{iso3}/{version}/04-topology/`:
-   - `{iso3}_admin3_cleaned.parquet` → rename to `{iso3}_admin3.parquet`
-   - `{iso3}_admin3_issues.parquet` → keep as-is (documents what was fixed)
+1. Adjust parameters, verify fixes (on the map for web, or by re-inspecting the output for CLI),
+   land both outputs in `data/{iso3}/{version}/04-topology/`:
+   - cleaned output → rename to `{iso3}_admin3.parquet`
+   - issues output → keep as `{iso3}_admin3_issues.parquet` (documents what was fixed)
 
-   fieldmaps.io downloads often land at the repo root — move them before processing.
+   fieldmaps.io web downloads often land at the repo root — move them before processing.
 
 1. Repeat for admin4 (plus Edge Extender step — see Geometry Model)
 
