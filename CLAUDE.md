@@ -3,7 +3,7 @@
 This workspace processes raw administrative boundary data from a source authority into a
 validated COD-AB release. The previous published version is fetched automatically from HDX
 and used as a reference baseline. Multiple countries can be in flight simultaneously — all
-work is scoped by country directory (e.g. `data/syr/`, `data/gab/`).
+work is scoped by country directory, one per lowercase ISO3 code (e.g. `data/{iso3}/`).
 
 ## Tools
 
@@ -37,8 +37,8 @@ Run this at the start of every session.
 ls -d data/*/
 ```
 
-If multiple countries exist, ask the user which one to work on. Set `{iso3}` = the country
-code (e.g. `syr`). The version numbers are derived from the data — `{ref_version}` is the
+If multiple countries exist, ask the user which one to work on. Set `{iso3}` = the lowercase
+ISO3 country code. The version numbers are derived from the data — `{ref_version}` is the
 previous HDX release (e.g. `v02`), `{version}` is the new release being prepared (e.g. `v03`).
 
 ### 2. Convert inputs to GeoParquet (if not already done)
@@ -99,13 +99,16 @@ find data/{iso3}/{version}/ -type f | sort
 ```
 
 If `REPORT.md` exists, read it to understand decisions already made and skip re-confirming
-completed verification gates. Build a per-level status table — mark ✓ if files exist, – if not:
+completed verification gates. Build a per-level status table with one row per level that
+actually exists for this country (base level, each ancestor down to admin0, and a finer level
+only if the source authority provides one — this is uncommon) — mark ✓ if files exist, – if
+not, and `derived` for Stages 1–4 on ancestor levels (they only get files at Stage 5). Example
+below shows admin2 as base purely for illustration — any level can be the base; the common
+case is simply that there's no finer level:
 
 | Level | 01-schema | 02-compare | 03-codes | 04-topology | 05-attributes |
 | --- | --- | --- | --- | --- | --- |
-| admin3 | ✓/– | ✓/– | ✓/– | ✓/– | ✓/– |
-| admin4 | ✓/– | ✓/– | ✓/– | ✓/– | ✓/– |
-| admin2 | ✓/– | derived | derived | derived | ✓/– |
+| admin2 (base) | ✓/– | ✓/– | ✓/– | ✓/– | ✓/– |
 | admin1 | ✓/– | derived | derived | derived | ✓/– |
 | admin0 | derived | derived | derived | derived | ✓/– |
 
@@ -136,16 +139,14 @@ data/
   {iso3}/
     raw/                      # Immutable — raw files from source authority
     {ref_version}/            # Reference GeoParquet from HDX (e.g. v02/)
-      {iso3}_admin0.parquet
-      {iso3}_admin1.parquet
-      {iso3}_admin2.parquet
-      {iso3}_admin3.parquet
-      {iso3}_neighborhoods.parquet   # or other reference-specific layers
+      {iso3}_admin0.parquet    # one file per published level, admin0 through
+      {iso3}_admin{N}.parquet  # the base level for this country
+      {iso3}_neighborhoods.parquet   # or other reference-specific layers for a finer level
     {version}/                # New release (e.g. v03/)
       00-inputs/              # Raw inputs converted to GeoParquet ({iso3}_admin{N}.parquet)
-      01-schema/              # Schema-mapped: admin3 + admin4; admin1/2 for cross-checks
+      01-schema/              # Schema-mapped: base level + finer level; ancestors for cross-checks
       02-compare/             # Changelog outputs ({iso3}_admin{N}_change.csv per level)
-      03-codes/               # Names checked + p-codes assigned — admin3 (and admin4) only
+      03-codes/               # Names checked + p-codes assigned — base level (and finer level) only
       04-topology/            # Topology Cleaner outputs ({iso3}_admin{N}.parquet, {iso3}_admin{N}_issues.parquet)
       05-attributes/          # All attributes complete ({iso3}_admin{N}.parquet)
       06-output/              # Final COD-AB package
@@ -156,44 +157,56 @@ data/
 
 ## Geometry Model
 
-**Admin3 is the authoritative geometry** (for Syria; identify the base level for other countries).
-Admin0/1/2 are **derived** from admin3 by dissolving at Stage 5 (Attributes) — they skip all earlier stages.
-Admin4 is a special case: it may have partial coverage and unclean topology, and may be a new
-dataset replacing a differently-named reference layer (e.g., `syr_neighborhoods`). Confirm the
-reference layer name to use for Stage 2 comparison at session start.
+**The base level is the authoritative geometry.** Confirm which admin level this is for the
+active country at session start — it varies by country and source authority (admin1 through
+admin4 have all occurred as the base; any level, including admin3, can be either the base or
+a derived ancestor depending on the country). Levels above the base (lower numbers) are
+**derived** by dissolving at Stage 5 (Attributes) — they skip all earlier stages. In the typical
+case that's the whole model: one base level, everything above it derived.
 
-### Deriving admin0/1/2 (DuckDB)
+Below, `{B}` denotes the confirmed base level number for the active country — substitute
+whichever level was confirmed (admin1 through admin4 all occur as the base with similar
+frequency; there's no default to assume).
+
+### Deriving ancestor levels (DuckDB)
 
 ```sql
--- Example: derive admin2 from admin3
-CREATE TABLE admin2 AS
+-- Example: derive level {B-1} from the base level {B}
+CREATE TABLE admin{B-1} AS
 SELECT ST_Union_Agg(geometry) AS geometry,
-       adm2_name, adm2_pcode,
-       adm1_name, adm1_pcode,
-       adm0_name, adm0_pcode,
+       adm{B-1}_name, adm{B-1}_pcode,
+       ... (remaining ancestor columns through adm0) ...
        valid_on, valid_to, version, lang, lang1, lang2, lang3
-FROM admin3
-GROUP BY adm2_name, adm2_pcode, adm1_name, adm1_pcode,
-         adm0_name, adm0_pcode, valid_on, valid_to, version, lang, lang1, lang2, lang3;
+FROM admin{B}
+GROUP BY adm{B-1}_name, adm{B-1}_pcode, ...,
+         valid_on, valid_to, version, lang, lang1, lang2, lang3;
 ```
 
-### Admin4 (three-step process)
+Repeat one dissolve per ancestor level, down to admin0.
 
-1. **Topology Cleaner** — via web (upload admin4 to [tools.fieldmaps.io](https://tools.fieldmaps.io/),
+### Uncommon case: a level finer than the base
+
+Most countries stop at the base level — skip this section unless the source authority also
+provides a level finer than the base (higher number, e.g. admin{B+1}). When it does occur,
+treat it as a special case: it may have partial coverage, unclean topology, or replace a
+differently-named reference layer. Confirm the reference layer name to use for Stage 2
+comparison at session start. Processing it is a three-step process:
+
+1. **Topology Cleaner** — via web (upload admin{B+1} to [tools.fieldmaps.io](https://tools.fieldmaps.io/),
    clean internal topology, download both outputs) or CLI (`uv run topo-tools clean ...`).
    Either way, land both outputs in `data/{iso3}/{version}/04-topology/`
-   (cleaned → `{iso3}_admin4.parquet`, issues → `{iso3}_admin4_issues.parquet`)
+   (cleaned → `{iso3}_admin{B+1}.parquet`, issues → `{iso3}_admin{B+1}_issues.parquet`)
 
-1. **Edge Extender** — via web (upload cleaned admin4 + final admin3, extend admin4 boundaries
-   to fill admin3 coverage gaps) or CLI (`uv run topo-tools extend ...`), either way producing
-   the extended result
+1. **Edge Extender** — via web (upload cleaned admin{B+1} + final base level, extend admin{B+1}
+   boundaries to fill base-level coverage gaps) or CLI (`uv run topo-tools extend ...`), either
+   way producing the extended result
 
-1. **Clip to admin3** with DuckDB:
+1. **Clip to the base level** with DuckDB:
 
    ```sql
-   SELECT a4.*, ST_Intersection(a4.geom, a3.geom) AS geom_clipped
-   FROM admin4 a4
-   JOIN admin3 a3 ON ST_Intersects(a4.geom, a3.geom);
+   SELECT fine.*, ST_Intersection(fine.geom, base.geom) AS geom_clipped
+   FROM admin{B+1} fine
+   JOIN admin{B} base ON ST_Intersects(fine.geom, base.geom);
    ```
 
 ---
@@ -203,6 +216,10 @@ GROUP BY adm2_name, adm2_pcode, adm1_name, adm1_pcode,
 `data/{iso3}/{version}/REPORT.md` serves two purposes: it is the resumability record (decisions
 made, gates approved) and the shareable release summary. Claude writes to it after each
 verification gate and finalizes it in Stage 7.
+
+Tables with one column per admin level (e.g. Stage 6 — Validation) show a 3-level example
+below — add or remove level columns to match the levels that actually exist for the active
+country.
 
 ### Template
 
@@ -241,9 +258,20 @@ P-code inheritance plan: {description}
 
 Name/pcode flags: {summary of mismatches reviewed and any accepted}
 
+## Stage 4 — Topology
+| Level | Gaps fixed | Overlaps fixed | Slivers accepted | Parameters |
+| --- | --- | --- | --- | --- |
+
+Accepted slivers/gaps: {list with justification, or "none"}
+
+## Stage 5 — Attributes
+valid_on: {date} / version: {version}
+
+Feature counts: {Level}: {count}, {Level}: {count}, ...
+
 ## Stage 6 — Validation
-| Check | admin0 | admin1 | admin2 | admin3 | admin4 |
-| --- | --- | --- | --- | --- | --- |
+| Check | admin0 | admin1 | admin2 |
+| --- | --- | --- | --- |
 
 Accepted warnings: {list with justification, or "none"}
 
@@ -268,7 +296,7 @@ adm{N}_name, adm{N}_name1, adm{N}_name2, adm{N}_name3, adm{N}_pcode
 adm{N-1}_name, adm{N-1}_name1, adm{N-1}_name2, adm{N-1}_name3, adm{N-1}_pcode
 ... (repeat for each ancestor down to 0)
 adm0_name, adm0_name1, adm0_name2, adm0_name3, adm0_pcode
-valid_on, valid_to, area_sqkm, version, lang, lang1, lang2, lang3, center_lat, center_lon
+valid_on, valid_to, area_sqkm, version, lang, lang1, lang2, lang3
 ```
 
 Admin0 additionally has `iso2`, `iso3` before `valid_on`.
@@ -276,8 +304,8 @@ Admin0 additionally has `iso2`, `iso3` before `valid_on`.
 ### Key rules
 
 - **P-codes**: `{ISO2}{numeric only}`, stored as string, no delimiters, max 20 chars. Child
-  pcode must start with parent pcode (hierarchically nested). Example: parent `SY02`, child `SY0201`.
-  This legacy ISO2 scheme is the standard for all current-cycle releases (e.g. AGO, BDI, SYR).
+  pcode must start with parent pcode (hierarchically nested). Example: parent `{ISO2}02`, child
+  `{ISO2}0201`. This legacy ISO2 scheme is the standard for all current-cycle releases.
 
 - **Geometry**: EPSG:4326 only, Polygon/MultiPolygon, no Z coordinates. No overlaps or gaps
   within a level. Child polygons fully contained in one parent.
@@ -290,8 +318,7 @@ Admin0 additionally has `iso2`, `iso3` before `valid_on`.
 
 - **Version**: `v{NN}` or `v{NN}.{NN}` (e.g., `v03`, `v02.01`); identical for all rows.
 
-- **Computed fields**: `area_sqkm` via EPSG:6933 equal-area projection; `center_lat`/`center_lon`
-  via `ST_PointOnSurface()` (guaranteed inside polygon).
+- **Computed fields**: `area_sqkm` via EPSG:6933 equal-area projection.
 
 - **Spatial majority joins** (assigning parent attributes): use `ST_MaximumInscribedCircle(geometry).center`
   as the representative point — it is the pole of inaccessibility (deepest interior point), safer than
@@ -309,16 +336,19 @@ Admin0 additionally has `iso2`, `iso3` before `valid_on`.
 ## Workflow
 
 **Output sort order** — every GeoParquet written at any stage must be sorted consistently:
-1. Parent pcode ascending (e.g. `adm3_pcode` for an admin4 file)
-2. `TRY_CAST(adm{N}_code AS INTEGER) NULLS LAST` — source numeric code
+1. Parent pcode ascending (e.g. `adm3_pcode` for an admin4 file — substitute the file's actual level)
+2. `TRY_CAST(adm{N}_code AS INTEGER) NULLS LAST` — the source authority's own numeric ordering
+   code for this level, retained (not renamed) from the raw input if present. If the source has
+   no such column, this key contributes nothing and sorting falls through to step 3.
 3. `adm{N}_name1` — alternate-language name as tiebreaker
 
 Apply this `ORDER BY` in every `COPY (SELECT ... ORDER BY ...) TO` statement. Consistent ordering makes diffs, comparisons, and crosswalk joins stable across runs.
 
 ### Stage 1 — Schema (`data/{iso3}/{version}/01-schema/`)
 
-Applies to admin3 (and admin4 if present); admin1/2 get lightweight `_src` normalization only.
-Admin0 is derived later in Stage 5.
+Applies to the base level (and a finer level, if present); ancestor levels only get column
+names normalized to `adm{N}_*` (no full COD-AB mapping — they're for cross-checking, not
+output) and are derived properly later in Stage 5.
 
 1. Claude reads `data/{iso3}/{version}/00-inputs/` files with DuckDB and lists all columns
 
@@ -331,10 +361,11 @@ Admin0 is derived later in Stage 5.
 
 1. **Verification gate**: confirm column mapping and BCP 47 language codes before proceeding
 
-1. Claude writes schema-mapped admin3 to `data/{iso3}/{version}/01-schema/{iso3}_admin3.parquet`
-   with COD-AB columns first (in spec order), then any retained source columns, then `geom`.
+1. Claude writes schema-mapped output for the base level to
+   `data/{iso3}/{version}/01-schema/{iso3}_admin{B}.parquet` with COD-AB columns first (in spec
+   order), then any retained source columns, then `geom`.
 
-1. Apply the same column mapping to the raw admin1, admin2, and admin4 inputs. Write to
+1. Apply the same column mapping to the raw ancestor and finer-level inputs. Write to
    `data/{iso3}/{version}/01-schema/{iso3}_admin{N}.parquet`. All source columns are retained.
 
 1. **Geometry quality check** — run on every file written to `01-schema/`:
@@ -363,30 +394,48 @@ Admin0 is derived later in Stage 5.
    span multiple parent admin areas. If parts are all in the same parent, keep as multipart.
    If parts belong to different parents, explode to singleparts and re-attribute each via
    spatial majority join against the parent level:
-   ```python
-   # uv run python3 script
-   import geopandas as gpd, pandas as pd
-   from shapely.ops import unary_union
+   ```sql
+   -- 1. Explode multipart features into individual parts
+   CREATE TABLE parts AS
+   SELECT *, unnest(ST_Dump(geometry)).geom AS part_geometry
+   FROM read_parquet('data/{iso3}/{version}/01-schema/{iso3}_admin{N}.parquet')
+   WHERE ST_GeometryType(geometry) = 'MULTIPOLYGON';
 
-   admin_n = gpd.read_parquet('data/{iso3}/{version}/01-schema/{iso3}_admin{N}.parquet')
-   parent  = gpd.read_parquet('data/{iso3}/{version}/00-inputs/{iso3}_admin{N-1}.parquet')
-   parent_cols = ['adm{N-1}_name', 'adm{N-1}_pcode', ...]  # all ancestor cols
+   -- 2. Assign each part its majority-overlap parent
+   CREATE TABLE parts_attributed AS
+   SELECT p.* EXCLUDE (geometry),
+          parent.adm{N-1}_pcode AS spatial_adm{N-1}_pcode,
+          parent.adm{N-1}_name AS spatial_adm{N-1}_name,
+          ... (remaining ancestor columns through adm0, each aliased spatial_*) ...
+          ST_Area(ST_Intersection(p.part_geometry, parent.geometry)) AS overlap_area
+   FROM parts p
+   JOIN read_parquet('data/{iso3}/{version}/00-inputs/{iso3}_admin{N-1}.parquet') parent
+     ON ST_Intersects(p.part_geometry, parent.geometry)
+   QUALIFY ROW_NUMBER() OVER (
+     PARTITION BY p.adm{N}_pcode, p.part_geometry ORDER BY overlap_area DESC) = 1;
 
-   is_multi = admin_n.geometry.geom_type == 'MultiPolygon'
-   for _, row in admin_n[is_multi].iterrows():
-       parts = list(row.geometry.geoms)
-       # find majority parent for each part
-       parent_pcodes = set()
-       for part in parts:
-           best = max(parent.itertuples(),
-                      key=lambda r: part.intersection(r.geometry).area
-                                    if part.intersects(r.geometry) else 0)
-           parent_pcodes.add(best.adm_pcode)
-       if len(parent_pcodes) == 1:
-           pass  # all parts same parent — keep as multipart
-       else:
-           # explode and re-attribute via spatial majority join
-           ...
+   -- 3. Features whose parts all agree on one parent stay multipart, unchanged.
+   --    Features whose parts disagree get exploded to singlepart, with every ancestor
+   --    column replaced from that part's majority parent:
+   CREATE TABLE needs_explode AS
+   SELECT adm{N}_pcode FROM parts_attributed
+   GROUP BY adm{N}_pcode HAVING COUNT(DISTINCT spatial_adm{N-1}_pcode) > 1;
+
+   COPY (
+     SELECT * EXCLUDE (geometry), geometry
+     FROM read_parquet('data/{iso3}/{version}/01-schema/{iso3}_admin{N}.parquet')
+     WHERE adm{N}_pcode NOT IN (SELECT adm{N}_pcode FROM needs_explode)
+
+     UNION ALL BY NAME
+
+     SELECT adm{N}_pcode, adm{N}_name,
+            spatial_adm{N-1}_pcode AS adm{N-1}_pcode, spatial_adm{N-1}_name AS adm{N-1}_name,
+            ... (remaining ancestor columns through adm0, renamed from spatial_*) ...
+            part_geometry AS geometry
+     FROM parts_attributed
+     WHERE adm{N}_pcode IN (SELECT adm{N}_pcode FROM needs_explode)
+   ) TO 'data/{iso3}/{version}/01-schema/{iso3}_admin{N}.parquet'
+   (FORMAT PARQUET, COMPRESSION ZSTD, COMPRESSION_LEVEL 15, GEOPARQUET_VERSION 'BOTH');
    ```
    After any explode+re-attribute, the feature count increases; note in REPORT.md.
 
@@ -396,10 +445,10 @@ Admin0 is derived later in Stage 5.
 
 ### Stage 2 — Compare (`data/{iso3}/{version}/02-compare/`)
 
-Applies to admin3 + admin4 (derived levels have no direct source to compare).
-For admin4, use the corresponding reference layer even if it has a different name (e.g.,
-`syr_neighborhoods` instead of `syr_admin4`). Note in the report that it is a replacement
-dataset, not a like-for-like comparison.
+Applies to the base level (and a finer level, if present) — derived/ancestor levels have no
+direct source to compare. For a finer level, use the corresponding reference layer even if it
+has a different name (e.g., `{iso3}_neighborhoods` instead of `{iso3}_admin4`). Note in the report
+that it is a replacement dataset, not a like-for-like comparison.
 
 1. Via web: open [tools.fieldmaps.io](https://tools.fieldmaps.io/) → **Changelog**. Via CLI:
    `uv run topo-tools change ...` (see `--help` for arguments)
@@ -415,7 +464,7 @@ dataset, not a like-for-like comparison.
 
    ```bash
    duckdb -c "SELECT relationship_class, COUNT(*) FROM
-     read_csv('data/{iso3}/{version}/02-compare/{iso3}_admin3_change.csv') GROUP BY 1 ORDER BY 2 DESC;"
+     read_csv('data/{iso3}/{version}/02-compare/{iso3}_admin{N}_change.csv') GROUP BY 1 ORDER BY 2 DESC;"
    ```
 
 1. Summarize: counts of unchanged / modified / new / removed per level
@@ -429,17 +478,19 @@ dataset, not a like-for-like comparison.
 
 ### Stage 3 — Names & Codes (`data/{iso3}/{version}/03-codes/`)
 
-Applies to admin3 (and admin4 if present). Admin0/1/2 are derived later in Stage 5.
+Applies to the base level (and a finer level, if present). Ancestor levels are derived later
+in Stage 5.
 
 1. Claude joins schema-mapped files (from `01-schema/`) with crosswalk data from `02-compare/`
 
-1. Cross-check admin3's embedded adm1/adm2 name and pcode values against:
-   - The current version's schema-normalized admin1/2 (`data/{iso3}/{version}/01-schema/`) —
+1. Cross-check the base level's embedded ancestor name and pcode values against:
+   - The current version's schema-normalized ancestor levels (`data/{iso3}/{version}/01-schema/`) —
      flags naming or pcode mismatches introduced by the new source authority
-   - The previous release (`data/{iso3}/{ref_version}/`) — flags any changes vs. previous admin1/2
+   - The previous release (`data/{iso3}/{ref_version}/`) — flags any changes vs. previous ancestor levels
 
-1. Spatial majority join: for each admin3 feature, find which source admin2 (and admin1) it
-   overlaps most by area, and flag any mismatch with the embedded adm2_pcode/adm1_pcode:
+1. Spatial majority join: for each base-level feature, find which source parent level it
+   overlaps most by area, and flag any mismatch with the embedded parent pcode. Example below
+   uses admin3 as the base level and admin2 as its parent — substitute the actual levels:
 
    ```sql
    SELECT a3.adm3_pcode, a3.adm3_name,
@@ -455,7 +506,7 @@ Applies to admin3 (and admin4 if present). Admin0/1/2 are derived later in Stage
    HAVING a3.adm2_pcode != a2.adm2_pcode;
    ```
 
-   Mismatches are expected where new admin2 districts were carved out of old ones — verify
+   Mismatches are expected where new parent-level districts were carved out of old ones — verify
    each case is intentional and document in REPORT.md.
 
 1. Name normalization: trim whitespace; flag ALL CAPS and all-lowercase names for review;
@@ -464,15 +515,11 @@ Applies to admin3 (and admin4 if present). Admin0/1/2 are derived later in Stage
 1. Inherited codes: existing features → keep existing input p-code (if spec-valid); fix malformed pcodes using reference crosswalk
 
 1. Generated codes: new features → parent pcode + zero-padded numeric suffix
-   (e.g., parent `SY0200` → new admin3 child `SY020001`).
+   (e.g., parent `{ISO2}0200` → new base-level child `{ISO2}020001`).
    Sort order within each parent group determines the suffix:
    1. `TRY_CAST(adm{N}_code AS INTEGER) NULLS LAST` — source numeric code ascending
    2. `adm{N}_name1` — alternate-language name as tiebreaker
    (Use `ROW_NUMBER() OVER (PARTITION BY adm{N-1}_pcode ORDER BY ...)` with `lpad(..., 2, '0')`)
-
-   If the level has nested features (see Stage 4 below), assign circle pcodes immediately
-   after their primary base polygon using a two-tier sort: `(base_rank, is_circle, circle_sub_rank)`.
-   This keeps each base + its circles contiguous in the pcode sequence.
 
 1. Full validation:
    - Format matches `^[A-Z]{2}[0-9]+$`, max 20 chars
@@ -480,15 +527,17 @@ Applies to admin3 (and admin4 if present). Admin0/1/2 are derived later in Stage
    - No duplicates within a level
    - Stored as VARCHAR, not integer
 
-1. Export a review CSV to `data/{iso3}/{version}/03-codes/{iso3}_admin3_review.csv` with columns:
-   `pcode_old`, `pcode_new`, `change_type`, `adm3_name`, `adm3_name1`, `adm2_pcode`, `adm2_name`, `adm1_pcode`, `adm1_name`.
+1. Export a review CSV to `data/{iso3}/{version}/03-codes/{iso3}_admin{B}_review.csv` with columns:
+   `pcode_old`, `pcode_new`, `change_type`, `adm{B}_name`, `adm{B}_name1`, and the name/pcode
+   columns of each ancestor level up through adm1.
    Use these `change_type` values:
    - `inherited` — pcode unchanged
-   - `generated_split` — No_Pcode new sub-district split from an existing one
+   - `generated_split` — source feature had no pcode (blank or a placeholder value); it's a new
+     sub-unit split out of an existing one
    - `generated_created` — brand new feature with no reference equivalent
-   - `updated_adm2_moved` — feature moved to a new admin2 district; pcode regenerated for nesting
-   - `fixed_malformed` — pcode in source was malformed (e.g. "01" instead of "SY010000")
-   - `fixed_wrong_adm2` — source embedded wrong admin2 pcode (detected via spatial join); pcode updated
+   - `updated_parent_moved` — feature moved to a new parent-level unit; pcode regenerated for nesting
+   - `fixed_malformed` — pcode in source was malformed (e.g. "01" instead of "{ISO2}010000")
+   - `fixed_wrong_parent` — source embedded wrong parent-level pcode (detected via spatial join); pcode updated
 
 1. **Verification gate**: show count by `change_type` and name/pcode mismatch flags; user reviews CSV and confirms
 
@@ -500,11 +549,11 @@ Applies to admin3 (and admin4 if present). Admin0/1/2 are derived later in Stage
 
 ### Stage 4 — Topology (`data/{iso3}/{version}/04-topology/`)
 
-Applies to admin3 (base level) + admin4 (special case — see Geometry Model above).
-Derived levels (admin0/1/2) skip this stage.
+Applies to the base level + a finer level, if present (special case — see Geometry Model above).
+Ancestor (derived) levels skip this stage.
 
 1. Via web: open [tools.fieldmaps.io](https://tools.fieldmaps.io/) → **Topology Cleaner**. Via
-   CLI: `uv run topo-tools clean data/{iso3}/{version}/03-codes/{iso3}_admin3.parquet ...`
+   CLI: `uv run topo-tools clean data/{iso3}/{version}/03-codes/{iso3}_admin{B}.parquet ...`
 
 1. Review the issues table/output (gaps, overlaps, slivers). Export or inspect the issues CSV if
    you want Claude to recommend gap-width and sliver-tolerance settings. Note: `topo-tools clean`
@@ -512,12 +561,12 @@ Derived levels (admin0/1/2) skip this stage.
 
 1. Adjust parameters, verify fixes (on the map for web, or by re-inspecting the output for CLI),
    land both outputs in `data/{iso3}/{version}/04-topology/`:
-   - cleaned output → rename to `{iso3}_admin3.parquet`
-   - issues output → keep as `{iso3}_admin3_issues.parquet` (documents what was fixed)
+   - cleaned output → rename to `{iso3}_admin{B}.parquet`
+   - issues output → keep as `{iso3}_admin{B}_issues.parquet` (documents what was fixed)
 
    fieldmaps.io web downloads often land at the repo root — move them before processing.
 
-1. Repeat for admin4 (plus Edge Extender step — see Geometry Model)
+1. Repeat for the finer level, if present (plus Edge Extender step — see Geometry Model)
 
 1. Claude validates with DuckDB:
 
@@ -526,33 +575,31 @@ Derived levels (admin0/1/2) skip this stage.
      SELECT COUNT(*) FILTER (WHERE geometry IS NULL) AS null_geoms,
             COUNT(*) FILTER (WHERE NOT ST_IsValid(geometry)) AS invalid_geoms,
             COUNT(*) FILTER (WHERE ST_GeometryType(geometry) NOT IN ('POLYGON','MULTIPOLYGON')) AS wrong_type
-     FROM read_parquet('data/{iso3}/{version}/04-topology/{iso3}_admin3.parquet');"
+     FROM read_parquet('data/{iso3}/{version}/04-topology/{iso3}_admin{B}.parquet');"
    ```
+
+1. **Verification gate**: confirm gap-width/sliver-tolerance parameters and any accepted
+   slivers/gaps before proceeding
+
+1. **Write to REPORT.md**: parameters used + counts of gaps/overlaps fixed + accepted
+   slivers/gaps with justification
 
 ---
 
 ### Stage 5 — Attributes (`data/{iso3}/{version}/05-attributes/`)
 
-Applies to all levels simultaneously. Admin0/1/2 are dissolved from admin3 here for the
-first and only time (see Geometry Model).
+Applies to all levels simultaneously. Ancestor levels are dissolved from the base level here
+for the first and only time (see Geometry Model).
 
-1. Derive admin0/1/2 via DuckDB dissolve of the final admin3 from `04-topology/` (or `03-codes/` if topology not yet run)
+1. Derive ancestor levels via DuckDB dissolve of the final base level from `04-topology/`
+   (or `03-codes/` if topology not yet run)
 
 1. Compute `area_sqkm`:
 
    ```sql
-   SELECT adm3_pcode,
+   SELECT adm{B}_pcode,
           ST_Area(ST_Transform(geometry, 'EPSG:4326', 'EPSG:6933')) / 1e6 AS area_sqkm
-   FROM admin3;
-   ```
-
-1. Compute `center_lat`, `center_lon`:
-
-   ```sql
-   SELECT adm3_pcode,
-          ST_Y(ST_PointOnSurface(geometry)) AS center_lat,
-          ST_X(ST_PointOnSurface(geometry)) AS center_lon
-   FROM admin3;
+   FROM admin{B};
    ```
 
 1. Set `valid_on` (ask user for date if not in source), `valid_to = NULL`, `version` (ask user),
@@ -595,7 +642,8 @@ Checks:
 1. Export a zipped GeoDatabase: convert all levels into a single `{iso3}_{version}.gdb`,
    then zip it to `{iso3}_{version}.gdb.zip` and delete the unzipped folder:
    ```bash
-   for level in admin0 admin1 admin2 admin3; do
+   LEVELS=$(ls data/{iso3}/{version}/06-output/{iso3}_admin*.parquet | sed -E 's/.*_(admin[0-9]+)\.parquet/\1/')
+   for level in $LEVELS; do
      gdal vector convert \
        "data/{iso3}/{version}/06-output/{iso3}_${level}.parquet" \
        "data/{iso3}/{version}/06-output/{iso3}_{version}.gdb" \
@@ -631,4 +679,5 @@ These are cases where Claude's judgment adds value beyond running queries:
 | Admin level mapping + ISO2/ISO3 | Session start | Admin Level Mapping |
 | Column mapping + language codes | Stage 1 | Stage 1 |
 | P-codes inherited vs. generated + name/pcode mismatch flags | Stage 3 | Stage 3 |
+| Topology parameters + accepted slivers/gaps | Stage 4 | Stage 4 |
 | Warnings accepted in validation | Stage 6 | Stage 6 |
