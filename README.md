@@ -25,13 +25,7 @@ decision before moving on. This README only covers how to set the workspace up; 
 
 ## Getting started
 
-1. Clone the repo and install Python dependencies:
-
-   ```bash
-   git clone https://github.com/OCHA-DAP/hdx-cod-ab-ai.git
-   cd hdx-cod-ab-ai
-   uv sync
-   ```
+1. Install dependencies: `uv sync`
 
 2. Create a country working directory and drop in the raw source files (any spatial format):
 
@@ -40,14 +34,13 @@ decision before moving on. This README only covers how to set the workspace up; 
    # copy the source authority's shapefiles/GDB/GeoJSON/etc. into data/{iso3}/raw/
    ```
 
-   `{iso3}` is the country's lowercase ISO3 code (e.g. `syr`, `bdi`). `data/` is gitignored —
-   it's a local, ephemeral working directory, not part of the repo.
+   `{iso3}` is the country's lowercase ISO3 code. `data/` is gitignored — it's a local,
+   ephemeral working directory, not part of the repo.
 
-3. Open the repo folder in VS Code, open the Claude Code panel (or run `claude` in the
-   integrated terminal), and start a session. Claude will detect the country directory, fetch
-   the previous published release from HDX for comparison, convert your raw inputs to
-   GeoParquet, and confirm the admin level mapping with you before proceeding — see
-   **Session Start** in `CLAUDE.md` for the exact steps.
+3. Open the Claude Code panel in VS Code (or run `claude` in the integrated terminal) and start
+   a session. Claude will detect the country directory, fetch the previous published release
+   from HDX for comparison, convert your raw inputs to GeoParquet, and confirm the admin level
+   mapping with you before proceeding — see **Session Start** in `CLAUDE.md` for the exact steps.
 
 ## Layout
 
