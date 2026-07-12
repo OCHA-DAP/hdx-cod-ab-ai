@@ -328,9 +328,6 @@ Admin0 additionally has `iso2`, `iso3` before `valid_on`.
 - **Language**: `lang` = BCP 47 code for primary name (must be romanized); `lang1`–`lang3` for
   alternate names.
 
-- Full spec: [`OCHA-DAP/hdx-cod-ab-spec`](https://github.com/OCHA-DAP/hdx-cod-ab-spec), `specs/boundaries/`
-  — clone as a sibling of this repo if not already present locally
-
 ---
 
 ## Workflow
