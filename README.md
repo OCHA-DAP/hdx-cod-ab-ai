@@ -1,8 +1,8 @@
 # hdx-cod-ab-ai
 
 An agentic workspace for turning raw administrative boundary data from a national source
-authority into a validated [COD-AB](https://github.com/OCHA-DAP/hdx-cod-ab-spec) release,
-using [Claude Code](https://claude.com/claude-code) as the processing engine.
+authority into a validated COD-AB release, using [Claude Code](https://claude.com/claude-code)
+as the processing engine.
 
 [`CLAUDE.md`](CLAUDE.md) is the actual playbook: it defines the full pipeline (schema mapping,
 changelog comparison, p-code assignment, topology cleaning, attribute derivation, validation,
